@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"lktr/pkg/matcher"
@@ -13,6 +14,7 @@ type Handler struct {
 	UpstreamDNS string
 	Verbose     bool
 	Matcher     *matcher.Matcher
+	mu          sync.RWMutex
 }
 
 func NewHandler(upstreamDNS string, verbose bool, m *matcher.Matcher) *Handler {
@@ -23,6 +25,21 @@ func NewHandler(upstreamDNS string, verbose bool, m *matcher.Matcher) *Handler {
 	}
 }
 
+func (h *Handler) UpdateMatcher(m *matcher.Matcher) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.Matcher = m
+	if h.Verbose {
+		log.Printf("Matcher updated successfully")
+	}
+}
+
+func (h *Handler) getMatcher() *matcher.Matcher {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.Matcher
+}
+
 func (h *Handler) HandleUDP(serverConn *net.UDPConn, clientAddr *net.UDPAddr, query []byte) {
 	domain, qtype := ParseQuery(query)
 
@@ -30,8 +47,9 @@ func (h *Handler) HandleUDP(serverConn *net.UDPConn, clientAddr *net.UDPAddr, qu
 		fmt.Printf("[UDP] %s -> %s (%s)\n", clientAddr, domain, qtype)
 	}
 
-	if h.Matcher != nil {
-		result := h.Matcher.Match(domain)
+	m := h.getMatcher()
+	if m != nil {
+		result := m.Match(domain)
 		if h.Verbose {
 			log.Printf("Domain: %s, Matched: %v", domain, result.Matched)
 		}
@@ -131,6 +149,31 @@ func (h *Handler) HandleTCP(clientConn net.Conn) {
 
 	if h.Verbose {
 		log.Printf("Processing TCP query from %s", clientConn.RemoteAddr())
+	}
+
+	m := h.getMatcher()
+	if m != nil {
+		result := m.Match(domain)
+		if h.Verbose {
+			log.Printf("Domain: %s, Matched: %v", domain, result.Matched)
+		}
+
+		if result.Matched {
+			fmt.Printf("[TCP] Blocking %s - returning NXDOMAIN\n", domain)
+			nxdomainResponse := CreateNXDomainResponse(query)
+			responseLen := len(nxdomainResponse)
+			lengthPrefix := []byte{byte(responseLen >> 8), byte(responseLen & 0xFF)}
+			_, err := clientConn.Write(lengthPrefix)
+			if err != nil {
+				log.Printf("Failed to send NXDOMAIN length to client: %v", err)
+				return
+			}
+			_, err = clientConn.Write(nxdomainResponse)
+			if err != nil {
+				log.Printf("Failed to send NXDOMAIN response to client: %v", err)
+			}
+			return
+		}
 	}
 
 	upstreamConn, err := net.DialTimeout("tcp", h.UpstreamDNS, 5*time.Second)

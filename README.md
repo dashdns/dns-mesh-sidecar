@@ -54,6 +54,7 @@ sudo ./dns-proxy -verbose
 - `-listen`: Address to listen on (default: `:53`)
 - `-upstream`: Upstream DNS server address (default: `1.1.1.1:53`)
 - `-verbose`: Enable verbose logging (default: `false`)
+- `-api-port`: API server port (default: `:9090`)
 
 ## Testing
 
@@ -78,6 +79,150 @@ nslookup example.com localhost
 # If running on port 5353
 nslookup -port=5353 example.com localhost
 ```
+
+## API Usage
+
+The DNS proxy includes a REST API server for dynamic blocklist management. The API server runs on port 9090 by default (configurable via `-api-port` flag).
+
+### Update Blocklist
+
+Update the blocklist with a new set of domains to block. This replaces the current blocklist entirely.
+
+**Endpoint:** `POST /api/blocklist`
+
+**Request Body:**
+```json
+{
+  "blocklist": [
+    "example.com",
+    "ads.example.com",
+    "*.tracker.com"
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Blocklist updated successfully",
+  "count": 3
+}
+```
+
+### Examples
+
+#### Basic blocklist update using curl:
+
+```bash
+curl -X POST http://localhost:9090/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{
+    "blocklist": [
+      "ads.example.com",
+      "tracker.example.com",
+      "malware.com"
+    ]
+  }'
+```
+
+#### Block wildcard domains:
+
+```bash
+curl -X POST http://localhost:9090/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{
+    "blocklist": [
+      "*.doubleclick.net",
+      "*.googlesyndication.com",
+      "*.facebook.com"
+    ]
+  }'
+```
+
+#### Block multiple ad and tracking domains:
+
+```bash
+curl -X POST http://localhost:9090/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{
+    "blocklist": [
+      "*.googleadservices.com",
+      "*.googlesyndication.com",
+      "*.doubleclick.net",
+      "*.amazon-adsystem.com",
+      "*.advertising.com",
+      "*.adnxs.com",
+      "*.adsrvr.org",
+      "analytics.google.com",
+      "*.facebook.com",
+      "*.twitter.com"
+    ]
+  }'
+```
+
+#### Clear the blocklist (empty list):
+
+```bash
+# Note: The API requires at least one entry, so this will return an error
+# To effectively clear blocking, send a list with a non-existent domain
+curl -X POST http://localhost:9090/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{
+    "blocklist": ["_dummy.local"]
+  }'
+```
+
+#### Load blocklist from a file:
+
+```bash
+# Create a blocklist file
+cat > blocklist.json <<EOF
+{
+  "blocklist": [
+    "ads.example.com",
+    "tracker.example.com",
+    "*.analytics.com",
+    "*.telemetry.com"
+  ]
+}
+EOF
+
+# Send the file contents to the API
+curl -X POST http://localhost:9090/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d @blocklist.json
+```
+
+#### Using with verbose logging:
+
+```bash
+# Start the DNS proxy with verbose logging
+./dns-proxy -verbose
+
+# In another terminal, update the blocklist
+curl -X POST http://localhost:9090/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{
+    "blocklist": ["test.example.com"]
+  }'
+
+# You'll see detailed logs about the blocklist update in the DNS proxy output
+```
+
+### Wildcard Patterns
+
+The blocklist supports wildcard patterns with `*.` prefix:
+
+- `example.com` - Blocks only the exact domain `example.com`
+- `*.example.com` - Blocks all subdomains of `example.com` (e.g., `ads.example.com`, `tracker.example.com`)
+- Wildcards match any subdomain level (e.g., `*.example.com` matches `a.b.c.example.com`)
+
+### API Response Codes
+
+- `200 OK` - Blocklist updated successfully
+- `400 Bad Request` - Invalid JSON or empty blocklist
+- `405 Method Not Allowed` - Wrong HTTP method (only POST is supported)
 
 ## Notes
 
