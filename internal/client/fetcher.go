@@ -7,10 +7,29 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type PolicyResponse struct {
-	Blocklist []string `json:"blocklist"`
+type DnsPolicy struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   DnsPolicySpec   `json:"spec,omitempty"`
+	Status DnsPolicyStatus `json:"status,omitempty"`
+}
+
+type DnsPolicySpec struct {
+	TargetSelector map[string]string `json:"targetSelector,omitempty"`
+	AllowList      []string          `json:"allowList,omitempty"`
+	BlockList      []string          `json:"blockList,omitempty"`
+}
+
+type DnsPolicyStatus struct {
+	SelectorHash       string             `json:"selectorHash,omitempty"`
+	SpecHash           string             `json:"specHash,omitempty"`
+	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 }
 
 type Fetcher struct {
@@ -65,6 +84,7 @@ func (f *Fetcher) fetchPolicies(configHash string) {
 		log.Printf("Error fetching policies: %v", err)
 		return
 	}
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -72,17 +92,17 @@ func (f *Fetcher) fetchPolicies(configHash string) {
 		return
 	}
 
-	var policyResp PolicyResponse
+	var policyResp DnsPolicy
 	if err := json.NewDecoder(resp.Body).Decode(&policyResp); err != nil {
 		log.Printf("Error decoding policy response: %v", err)
 		return
 	}
 
 	if f.verbose {
-		log.Printf("Fetched %d policy entries from controller", len(policyResp.Blocklist))
+		log.Printf("Fetched %d policy entries from controller", len(policyResp.Spec.BlockList))
 	}
 
-	f.updateChannel <- policyResp.Blocklist
+	f.updateChannel <- policyResp.Spec.BlockList
 
-	log.Printf("Policies fetched successfully: %d entries\n", len(policyResp.Blocklist))
+	log.Printf("Policies fetched successfully: %d entries\n", len(policyResp.Spec.BlockList))
 }
