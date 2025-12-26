@@ -6,6 +6,7 @@ import (
 	"lktr/internal/client"
 	"lktr/internal/config"
 	"lktr/internal/dns"
+	"lktr/internal/metrics"
 	"lktr/internal/server"
 	"lktr/pkg/matcher"
 )
@@ -20,7 +21,15 @@ func main() {
 		log.Printf("Controller URL: %s\n", cfg.ControllerURL)
 		log.Printf("Fetch Interval: %v\n", cfg.FetchInterval)
 	}
+	log.Printf("Metrics endpoint: http://%s/metrics\n", cfg.MetricsAddr)
 	log.Printf("Starting DNS proxy...")
+
+	// Start metrics server in background
+	go func() {
+		if err := metrics.StartMetricsServer(cfg.MetricsAddr); err != nil {
+			log.Printf("Metrics server error: %v", err)
+		}
+	}()
 
 	blocklist := []string{}
 

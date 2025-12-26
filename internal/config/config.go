@@ -12,6 +12,7 @@ type Config struct {
 	Blocklist      []string
 	ControllerURL  string
 	FetchInterval  time.Duration
+	MetricsAddr    string
 }
 
 func Load() *Config {
@@ -23,6 +24,7 @@ func Load() *Config {
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose logging")
 	flag.StringVar(&cfg.ControllerURL, "controller", "", "Controller URL to fetch policies from")
 	flag.IntVar(&fetchIntervalSec, "fetch-interval", 30, "Policy fetch interval in seconds (default 30)")
+	flag.StringVar(&cfg.MetricsAddr, "metrics", ":9090", "Metrics HTTP server address (default :9090)")
 	flag.Parse()
 
 	cfg.FetchInterval = time.Duration(fetchIntervalSec) * time.Second
