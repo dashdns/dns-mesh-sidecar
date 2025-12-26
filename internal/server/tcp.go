@@ -1,9 +1,9 @@
 package server
 
 import (
-	"fmt"
-	"log"
 	"net"
+
+	"github.com/rs/zerolog/log"
 
 	"lktr/internal/dns"
 )
@@ -25,16 +25,17 @@ func NewTCPServer(listenAddr string, handler *dns.Handler, verbose bool) *TCPSer
 func (s *TCPServer) Start() error {
 	listener, err := net.Listen("tcp", s.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("failed to listen on TCP %s: %w", s.ListenAddr, err)
+		log.Err(err).Msgf("failed to listen on TCP %s", s.ListenAddr)
+		return err
 	}
 	defer listener.Close()
 
-	log.Printf("DNS proxy listening on TCP %s\n", s.ListenAddr)
+	log.Info().Msgf("DNS proxy listening on TCP %s\n", s.ListenAddr)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("Error accepting TCP connection: %v", err)
+			log.Err(err).Msg("Error accepting TCP connection:")
 			continue
 		}
 

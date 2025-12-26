@@ -2,12 +2,14 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"lktr/internal/metrics"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -54,12 +56,13 @@ func NewFetcher(controllerURL string, fetchInterval time.Duration, verbose bool,
 
 func (f *Fetcher) Start() {
 	if f.verbose {
-		log.Printf("Starting policy fetcher, controller: %s, interval: %v", f.controllerURL, f.fetchInterval)
+		log.Info().Msgf("Starting policy fetcher, controller: %s, interval: %v", f.controllerURL, f.fetchInterval)
 	}
 
 	configHash := os.Getenv("DNS_MESH_CONFIG_HASH")
 	if len(configHash) == 0 {
-		log.Fatal("The config hash cannot be blank")
+		err := errors.New("MISSING_ENVIRONMENT_VARIABLE")
+		log.Err(err).Msg("The config hash cannot be blank")
 	}
 
 	ticker := time.NewTicker(f.fetchInterval)
@@ -75,34 +78,38 @@ func (f *Fetcher) Start() {
 
 func (f *Fetcher) fetchPolicies(configHash string) {
 	if f.verbose {
-		log.Printf("Fetching policies from controller: %s", f.controllerURL)
+		log.Info().Msgf("Fetching policies from controller: %s", f.controllerURL)
 	}
 
 	url := fmt.Sprintf("%s/api/policies?hash=%s", f.controllerURL, configHash)
 	resp, err := f.httpClient.Get(url)
 	if err != nil {
-		log.Printf("Error fetching policies: %v", err)
+		log.Err(err).Msg("Error fetching policies:")
+		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypePolicyFetch, "policy_upstream").Inc()
 		return
 	}
 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("Unexpected status code from controller: %d", resp.StatusCode)
+		err := errors.New("HTTP status error")
+		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypePolicyFetch, "policy_upstream_http_err").Inc()
+		log.Err(err).Msgf("Unexpected status code from controller: %d", resp.StatusCode)
 		return
 	}
 
 	var policyResp DnsPolicy
 	if err := json.NewDecoder(resp.Body).Decode(&policyResp); err != nil {
-		log.Printf("Error decoding policy response: %v", err)
+		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypePolicyFetch, "policy_upstream_decode_err").Inc()
+		log.Err(err).Msg("Error decoding policy response:")
 		return
 	}
 
 	if f.verbose {
-		log.Printf("Fetched %d policy entries from controller", len(policyResp.Spec.BlockList))
+		log.Info().Msgf("Fetched %d policy entries from controller", len(policyResp.Spec.BlockList))
 	}
 
 	f.updateChannel <- policyResp.Spec.BlockList
 
-	log.Printf("Policies fetched successfully: %d entries\n", len(policyResp.Spec.BlockList))
+	log.Info().Msgf("Policies fetched successfully: %d entries\n", len(policyResp.Spec.BlockList))
 }

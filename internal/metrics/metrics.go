@@ -55,10 +55,11 @@ var (
 
 // Error type constants
 const (
-	ErrorTypeParse          = "parse"
-	ErrorTypeUpstreamDial   = "upstream_dial"
-	ErrorTypeUpstreamWrite  = "upstream_write"
-	ErrorTypeUpstreamRead   = "upstream_read"
+	ErrorTypeParse           = "parse"
+	ErrorTypeUpstreamDial    = "upstream_dial"
+	ErrorTypeUpstreamWrite   = "upstream_write"
+	ErrorTypeUpstreamRead    = "upstream_read"
 	ErrorTypeUpstreamTimeout = "upstream_timeout"
-	ErrorTypeClientWrite    = "client_write"
+	ErrorTypeClientWrite     = "client_write"
+	ErrorTypePolicyFetch     = "policy_fetch"
 )
