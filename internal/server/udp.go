@@ -1,9 +1,9 @@
 package server
 
 import (
-	"fmt"
-	"log"
 	"net"
+
+	"github.com/rs/zerolog/log"
 
 	"lktr/internal/dns"
 )
@@ -25,28 +25,30 @@ func NewUDPServer(listenAddr string, handler *dns.Handler, verbose bool) *UDPSer
 func (s *UDPServer) Start() error {
 	addr, err := net.ResolveUDPAddr("udp", s.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("failed to resolve UDP address: %w", err)
+		log.Err(err).Msg("failed to resolve UDP address:")
+		return err
 	}
 
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		return fmt.Errorf("failed to listen on UDP %s: %w", s.ListenAddr, err)
+		log.Err(err).Msgf("failed to listen on UDP %s", s.ListenAddr)
+		return err
 	}
 	defer conn.Close()
 
-	log.Printf("DNS proxy listening on UDP %s\n", s.ListenAddr)
+	log.Info().Msgf("DNS proxy listening on UDP %s\n", s.ListenAddr)
 
 	buffer := make([]byte, 512)
 
 	for {
 		n, clientAddr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
-			log.Printf("Error reading from UDP: %v", err)
+			log.Err(err).Msgf("Error reading from UDP:")
 			continue
 		}
 
 		if s.Verbose {
-			log.Printf("Received %d bytes from %s", n, clientAddr)
+			log.Info().Msgf("Received %d bytes from %s", n, clientAddr)
 		}
 
 		queryCopy := make([]byte, n)
