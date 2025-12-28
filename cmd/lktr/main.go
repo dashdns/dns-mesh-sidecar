@@ -44,8 +44,8 @@ func main() {
 			if cfg.Verbose {
 				log.Info().Msgf("Received blocklist update with %d entries", len(newBlocklist))
 			}
-
 			newMatcher := matcher.BuildMatcher(newBlocklist)
+			dnsHandler.DryRun = cfg.DryRun
 			dnsHandler.UpdateMatcher(newMatcher)
 
 			log.Info().Msgf("Blocklist updated successfully with %d entries\n", len(newBlocklist))
@@ -53,7 +53,7 @@ func main() {
 	}()
 
 	if cfg.ControllerURL != "" {
-		fetcher := client.NewFetcher(cfg.ControllerURL, cfg.FetchInterval, cfg.Verbose, updateChannel)
+		fetcher := client.NewFetcher(cfg.ControllerURL, cfg.FetchInterval, cfg.Verbose, updateChannel, &cfg.DryRun)
 		go fetcher.Start()
 	} else {
 		log.Info().Msgf("Warning: No controller URL specified, running without policy updates")

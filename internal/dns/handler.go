@@ -19,6 +19,7 @@ const (
 type Handler struct {
 	UpstreamDNS string
 	Verbose     bool
+	DryRun      bool
 	Matcher     *matcher.Matcher
 	mu          sync.RWMutex
 }
@@ -74,20 +75,26 @@ func (h *Handler) HandleUDP(serverConn *net.UDPConn, clientAddr *net.UDPAddr, qu
 		}
 
 		if result.Matched {
-			log.Info().Msgf("[UDP] Blocking %s - returning NXDOMAIN\n", domain)
 
-			// Increment blocked counter
-			metrics.QueriesBlocked.WithLabelValues(protocol).Inc()
+			if !h.DryRun {
 
-			nxdomainResponse := CreateNXDomainResponse(query)
-			_, err := serverConn.WriteToUDP(nxdomainResponse, clientAddr)
-			if err != nil {
-				log.Err(err).Msg("Failed to send NXDOMAIN response to client:")
-				metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeClientWrite, protocol).Inc()
+				log.Info().Msgf("[UDP] Blocking %s - returning NXDOMAIN\n", domain)
+
+				// Increment blocked counter
+				metrics.QueriesBlocked.WithLabelValues(protocol).Inc()
+
+				nxdomainResponse := CreateNXDomainResponse(query)
+				_, err := serverConn.WriteToUDP(nxdomainResponse, clientAddr)
+				if err != nil {
+					log.Err(err).Msg("Failed to send NXDOMAIN response to client:")
+					metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeClientWrite, protocol).Inc()
+				}
+
+				metrics.QueryDuration.WithLabelValues(protocol, "blocked").Observe(time.Since(start).Seconds())
+				return
+			} else {
+				log.Info().Msgf("DryRun Mode enabled not blocking [UDP] %s - returning NXDOMAIN\n", domain)
 			}
-
-			metrics.QueryDuration.WithLabelValues(protocol, "blocked").Observe(time.Since(start).Seconds())
-			return
 		}
 	}
 

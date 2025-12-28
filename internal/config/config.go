@@ -6,13 +6,14 @@ import (
 )
 
 type Config struct {
-	ListenAddr     string
-	UpstreamDNS    string
-	Verbose        bool
-	Blocklist      []string
-	ControllerURL  string
-	FetchInterval  time.Duration
-	MetricsAddr    string
+	ListenAddr    string
+	UpstreamDNS   string
+	Verbose       bool
+	Blocklist     []string
+	DryRun        bool
+	ControllerURL string
+	FetchInterval time.Duration
+	MetricsAddr   string
 }
 
 func Load() *Config {

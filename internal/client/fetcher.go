@@ -25,6 +25,7 @@ type DnsPolicySpec struct {
 	TargetSelector map[string]string `json:"targetSelector,omitempty"`
 	AllowList      []string          `json:"allowList,omitempty"`
 	BlockList      []string          `json:"blockList,omitempty"`
+	DryRun         bool              `json:"dryrun,omitempty"`
 }
 
 type DnsPolicyStatus struct {
@@ -38,15 +39,17 @@ type Fetcher struct {
 	controllerURL string
 	fetchInterval time.Duration
 	verbose       bool
+	dryRun        *bool
 	updateChannel chan []string
 	httpClient    *http.Client
 }
 
-func NewFetcher(controllerURL string, fetchInterval time.Duration, verbose bool, updateChannel chan []string) *Fetcher {
+func NewFetcher(controllerURL string, fetchInterval time.Duration, verbose bool, updateChannel chan []string, dryRun *bool) *Fetcher {
 	return &Fetcher{
 		controllerURL: controllerURL,
 		fetchInterval: fetchInterval,
 		verbose:       verbose,
+		dryRun:        dryRun,
 		updateChannel: updateChannel,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
@@ -106,12 +109,12 @@ func (f *Fetcher) fetchPolicies(configHash string) {
 	}
 
 	policyCount := len(policyResp.Spec.BlockList)
-
 	if f.verbose {
 		log.Info().Msgf("Fetched %d policy entries from controller", policyCount)
 	}
 
 	f.updateChannel <- policyResp.Spec.BlockList
+	*f.dryRun = policyResp.Spec.DryRun
 
 	metrics.InfoTotal.WithLabelValues(metrics.InformalMetric, "number_of_policies").Set(float64(policyCount))
 
