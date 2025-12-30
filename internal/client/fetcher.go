@@ -26,6 +26,7 @@ type DnsPolicySpec struct {
 	AllowList      []string          `json:"allowList,omitempty"`
 	BlockList      []string          `json:"blockList,omitempty"`
 	DryRun         bool              `json:"dryrun,omitempty"`
+	Interval       int               `json:"interval,omitempty"`
 }
 
 type DnsPolicyStatus struct {
@@ -37,14 +38,14 @@ type DnsPolicyStatus struct {
 
 type Fetcher struct {
 	controllerURL string
-	fetchInterval time.Duration
+	fetchInterval *time.Duration
 	verbose       bool
 	dryRun        *bool
 	updateChannel chan []string
 	httpClient    *http.Client
 }
 
-func NewFetcher(controllerURL string, fetchInterval time.Duration, verbose bool, updateChannel chan []string, dryRun *bool) *Fetcher {
+func NewFetcher(controllerURL string, fetchInterval *time.Duration, verbose bool, updateChannel chan []string, dryRun *bool) *Fetcher {
 	return &Fetcher{
 		controllerURL: controllerURL,
 		fetchInterval: fetchInterval,
@@ -68,7 +69,7 @@ func (f *Fetcher) Start() {
 		log.Err(err).Msg("The config hash cannot be blank")
 	}
 
-	ticker := time.NewTicker(f.fetchInterval)
+	ticker := time.NewTicker(*f.fetchInterval)
 	defer ticker.Stop()
 
 	// Fetch immediately on start
@@ -115,6 +116,7 @@ func (f *Fetcher) fetchPolicies(configHash string) {
 
 	f.updateChannel <- policyResp.Spec.BlockList
 	*f.dryRun = policyResp.Spec.DryRun
+	*f.fetchInterval = time.Duration(policyResp.Spec.Interval)
 	metrics.InfoTotal.WithLabelValues(metrics.InformalMetric, "number_of_policies").Set(float64(policyCount))
 
 	if f.verbose {

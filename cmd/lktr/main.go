@@ -55,7 +55,7 @@ func main() {
 	}()
 
 	if cfg.ControllerURL != "" {
-		fetcher := client.NewFetcher(cfg.ControllerURL, cfg.FetchInterval, cfg.Verbose, updateChannel, &cfg.DryRun)
+		fetcher := client.NewFetcher(cfg.ControllerURL, &cfg.FetchInterval, cfg.Verbose, updateChannel, &cfg.DryRun)
 		go fetcher.Start()
 	} else {
 		log.Info().Msgf("Warning: No controller URL specified, running without policy updates")
