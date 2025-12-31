@@ -37,21 +37,23 @@ type DnsPolicyStatus struct {
 }
 
 type Fetcher struct {
-	controllerURL string
-	fetchInterval *time.Duration
-	verbose       bool
-	dryRun        *bool
-	updateChannel chan []string
-	httpClient    *http.Client
+	controllerURL   string
+	fetchInterval   *time.Duration
+	verbose         bool
+	dryRun          *bool
+	operationalMode string
+	updateChannel   chan []string
+	httpClient      *http.Client
 }
 
-func NewFetcher(controllerURL string, fetchInterval *time.Duration, verbose bool, updateChannel chan []string, dryRun *bool) *Fetcher {
+func NewFetcher(controllerURL string, fetchInterval *time.Duration, verbose bool, updateChannel chan []string, dryRun *bool, operationalMode string) *Fetcher {
 	return &Fetcher{
-		controllerURL: controllerURL,
-		fetchInterval: fetchInterval,
-		verbose:       verbose,
-		dryRun:        dryRun,
-		updateChannel: updateChannel,
+		controllerURL:   controllerURL,
+		fetchInterval:   fetchInterval,
+		verbose:         verbose,
+		dryRun:          dryRun,
+		operationalMode: operationalMode,
+		updateChannel:   updateChannel,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -84,36 +86,52 @@ func (f *Fetcher) fetchPolicies(configHash string) {
 	if f.verbose {
 		log.Info().Msgf("Fetching policies from controller: %s", f.controllerURL)
 	}
-
 	url := fmt.Sprintf("%s/api/policies?hash=%s", f.controllerURL, configHash)
 	resp, err := f.httpClient.Get(url)
 	if err != nil {
 		log.Err(err).Msg("Error fetching policies:")
+		log.Info().Msgf("The operational mode is %s error while fetching policies", f.operationalMode)
+		switch f.operationalMode {
+		case "strict":
+			f.updateChannel <- []string{"*"}
+		case "balance":
+			*f.dryRun = true
+		}
 		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypePolicyFetch, "policy_upstream").Inc()
 		return
 	}
-
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		err := errors.New("HTTP status error")
 		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypePolicyFetch, "policy_upstream_http_err").Inc()
+		log.Info().Msgf("The operational mode is %s error on HTTP Status", f.operationalMode)
+		switch f.operationalMode {
+		case "strict":
+			f.updateChannel <- []string{"*"}
+		case "balance":
+			*f.dryRun = true
+		}
 		log.Err(err).Msgf("Unexpected status code from controller: %d", resp.StatusCode)
+		log.Info().Msg("THE END")
 		return
 	}
-
 	var policyResp DnsPolicy
 	if err := json.NewDecoder(resp.Body).Decode(&policyResp); err != nil {
 		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypePolicyFetch, "policy_upstream_decode_err").Inc()
+		log.Info().Msgf("The operational mode is %s error on decoding", f.operationalMode)
+		switch f.operationalMode {
+		case "strict":
+			f.updateChannel <- []string{"*"}
+		case "balance":
+			*f.dryRun = true
+		}
 		log.Err(err).Msg("Error decoding policy response:")
 		return
 	}
-
 	policyCount := len(policyResp.Spec.BlockList)
 	if f.verbose {
 		log.Info().Msgf("Fetched %d policy entries from controller", policyCount)
 	}
-
 	f.updateChannel <- policyResp.Spec.BlockList
 	*f.dryRun = policyResp.Spec.DryRun
 	*f.fetchInterval = time.Duration(policyResp.Spec.Interval)

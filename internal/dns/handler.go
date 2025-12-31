@@ -2,14 +2,13 @@ package dns
 
 import (
 	"errors"
+	"lktr/internal/metrics"
+	"lktr/pkg/matcher"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
-
-	"lktr/internal/metrics"
-	"lktr/pkg/matcher"
 )
 
 const (
@@ -50,12 +49,9 @@ func (h *Handler) getMatcher() *matcher.Matcher {
 func (h *Handler) HandleUDP(serverConn *net.UDPConn, clientAddr *net.UDPAddr, query []byte) {
 	start := time.Now()
 	protocol := "udp"
-
 	// Increment total queries
 	metrics.QueriesTotal.WithLabelValues(protocol).Inc()
-
 	domain, qtype := ParseQuery(query)
-
 	// Track parse errors (when domain is empty and query is long enough)
 	if domain == "" && len(query) >= 12 {
 		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeParse, protocol).Inc()
@@ -357,8 +353,6 @@ func (h *Handler) HandleTCP(clientConn net.Conn) {
 	if h.Verbose {
 		log.Info().Msgf("Sent TCP response to %s", clientConn.RemoteAddr())
 	}
-
-	// Successfully allowed and forwarded
 	metrics.QueriesAllowed.WithLabelValues(protocol).Inc()
 	metrics.QueryDuration.WithLabelValues(protocol, "allowed").Observe(time.Since(start).Seconds())
 }
