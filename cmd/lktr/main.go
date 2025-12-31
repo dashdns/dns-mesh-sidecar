@@ -7,6 +7,7 @@ import (
 	"lktr/internal/metrics"
 	"lktr/internal/server"
 	"lktr/pkg/matcher"
+	"os"
 
 	"github.com/rs/zerolog/log"
 )
@@ -54,8 +55,9 @@ func main() {
 		}
 	}()
 
+	operationalMode := os.Getenv("DNS_MESH_OPERATIONAL_MODE")
 	if cfg.ControllerURL != "" {
-		fetcher := client.NewFetcher(cfg.ControllerURL, &cfg.FetchInterval, cfg.Verbose, updateChannel, &cfg.DryRun)
+		fetcher := client.NewFetcher(cfg.ControllerURL, &cfg.FetchInterval, cfg.Verbose, updateChannel, &cfg.DryRun, operationalMode)
 		go fetcher.Start()
 	} else {
 		log.Info().Msgf("Warning: No controller URL specified, running without policy updates")

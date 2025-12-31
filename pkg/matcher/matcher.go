@@ -24,9 +24,10 @@ type rule struct {
 }
 
 type Matcher struct {
-	exact map[string]struct{}
-	wild  *radix.Tree
-	bf    *bloom.BloomFilter
+	exact    map[string]struct{}
+	wild     *radix.Tree
+	bf       *bloom.BloomFilter
+	matchAll bool
 }
 
 type AtomicMatcher struct {
@@ -70,6 +71,12 @@ func BuildMatcher(rules []string) *Matcher {
 			continue
 		}
 
+		// Check for match-all wildcard
+		if r == "*" {
+			m.matchAll = true
+			continue
+		}
+
 		isWildcard := strings.HasPrefix(r, "*.")
 		base := r
 		if isWildcard {
@@ -101,6 +108,11 @@ func (m *Matcher) Match(query string) MatchResult {
 	q, _ := normalizeDomain(query)
 	if q == "" {
 		return MatchResult{}
+	}
+
+	// Check match-all flag first
+	if m.matchAll {
+		return MatchResult{Matched: true, Rule: "*", Type: RWildcard}
 	}
 
 	if m.bf != nil && !m.bf.TestString(q) {
