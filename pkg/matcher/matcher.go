@@ -2,7 +2,6 @@ package matcher
 
 import (
 	"strings"
-	"sync/atomic"
 
 	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
@@ -11,34 +10,10 @@ import (
 	"github.com/bits-and-blooms/bloom/v3"
 )
 
-type ruleType uint8
-
 const (
 	RExact ruleType = iota
 	RWildcard
 )
-
-type rule struct {
-	typ ruleType
-	val string
-}
-
-type Matcher struct {
-	exact    map[string]struct{}
-	wild     *radix.Tree
-	bf       *bloom.BloomFilter
-	matchAll bool
-}
-
-type AtomicMatcher struct {
-	Ptr atomic.Pointer[Matcher]
-}
-
-type MatchResult struct {
-	Matched bool
-	Rule    string
-	Type    ruleType
-}
 
 func normalizeDomain(d string) (string, string) {
 	d = strings.TrimSpace(strings.TrimSuffix(strings.ToLower(d), "."))
