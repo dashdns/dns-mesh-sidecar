@@ -18,6 +18,10 @@ func main() {
 	log.Info().Msg("DNS Proxy v0.0.3-rc (Sidecar Mode)\n")
 	log.Info().Msgf("Listening on: %s\n", cfg.ListenAddr)
 	log.Info().Msgf("Upstream DNS: %s\n", cfg.UpstreamDNS)
+	if cfg.HTTPSModeEnabled {
+		log.Info().Msgf("DNS-over-HTTPS mode: ENABLED\n")
+		log.Info().Msgf("HTTPS Upstream: %s\n", cfg.HTTPSUpstream)
+	}
 	if cfg.ControllerURL != "" {
 		log.Info().Msgf("Controller URL: %s\n", cfg.ControllerURL)
 		log.Info().Msgf("Fetch Interval: %v\n", cfg.FetchInterval)
@@ -36,7 +40,7 @@ func main() {
 
 	m := matcher.BuildMatcher(blocklist)
 
-	dnsHandler := dns.NewHandler(cfg.UpstreamDNS, cfg.Verbose, m)
+	dnsHandler := dns.NewHandler(cfg.UpstreamDNS, cfg.Verbose, m, cfg.HTTPSModeEnabled, cfg.HTTPSUpstream)
 
 	updateChannel := make(chan []string, 10)
 
