@@ -28,7 +28,7 @@ type Handler struct {
 	mu               sync.RWMutex
 }
 
-func NewHandler(upstreamDNS string, verbose bool, m *matcher.Matcher, httpsModeEnabled bool, httpsUpstream string) *Handler {
+func NewHandler(upstreamDNS string, verbose bool, m *matcher.Matcher, httpsModeEnabled bool, httpsUpstream string, dnsMeshDohTimeout int) *Handler {
 	handler := &Handler{
 		UpstreamDNS:      upstreamDNS,
 		Verbose:          verbose,
@@ -46,7 +46,7 @@ func NewHandler(upstreamDNS string, verbose bool, m *matcher.Matcher, httpsModeE
 		dohConfig := doh.DoHConfig{
 			ServerURL: httpsUpstream,
 			TLSConfig: tlsConfig,
-			Timeout:   10 * time.Second,
+			Timeout:   time.Duration(dnsMeshDohTimeout) * time.Second,
 		}
 
 		handler.DoHClient = doh.NewDoHClient(dohConfig)

@@ -8,6 +8,7 @@ import (
 	"lktr/internal/server"
 	"lktr/pkg/matcher"
 	"os"
+	"strconv"
 
 	"github.com/rs/zerolog/log"
 )
@@ -39,8 +40,12 @@ func main() {
 	blocklist := []string{}
 
 	m := matcher.BuildMatcher(blocklist)
+	dnsMeshDohTimeout, err := strconv.Atoi(os.Getenv("DNS_MESH_DOH_TIMEOUT"))
+	if err != nil {
+		dnsMeshDohTimeout = 10
+	}
 
-	dnsHandler := dns.NewHandler(cfg.UpstreamDNS, cfg.Verbose, m, cfg.HTTPSModeEnabled, cfg.HTTPSUpstream)
+	dnsHandler := dns.NewHandler(cfg.UpstreamDNS, cfg.Verbose, m, cfg.HTTPSModeEnabled, cfg.HTTPSUpstream, dnsMeshDohTimeout)
 
 	updateChannel := make(chan []string, 10)
 
