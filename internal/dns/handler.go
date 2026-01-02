@@ -1,7 +1,9 @@
 package dns
 
 import (
+	"crypto/tls"
 	"errors"
+	"lktr/internal/doh"
 	"lktr/internal/metrics"
 	"lktr/pkg/matcher"
 	"net"
@@ -16,19 +18,45 @@ const (
 )
 
 type Handler struct {
-	UpstreamDNS string
-	Verbose     bool
-	DryRun      bool
-	Matcher     *matcher.Matcher
-	mu          sync.RWMutex
+	UpstreamDNS      string
+	Verbose          bool
+	DryRun           bool
+	Matcher          *matcher.Matcher
+	HTTPSModeEnabled bool
+	HTTPSUpstream    string
+	DoHClient        *doh.DoHClient
+	mu               sync.RWMutex
 }
 
-func NewHandler(upstreamDNS string, verbose bool, m *matcher.Matcher) *Handler {
-	return &Handler{
-		UpstreamDNS: upstreamDNS,
-		Verbose:     verbose,
-		Matcher:     m,
+func NewHandler(upstreamDNS string, verbose bool, m *matcher.Matcher, httpsModeEnabled bool, httpsUpstream string, dnsMeshDohTimeout int) *Handler {
+	handler := &Handler{
+		UpstreamDNS:      upstreamDNS,
+		Verbose:          verbose,
+		Matcher:          m,
+		HTTPSModeEnabled: httpsModeEnabled,
+		HTTPSUpstream:    httpsUpstream,
 	}
+
+	// Initialize DoH client if HTTPS mode is enabled
+	if httpsModeEnabled {
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+
+		dohConfig := doh.DoHConfig{
+			ServerURL: httpsUpstream,
+			TLSConfig: tlsConfig,
+			Timeout:   time.Duration(dnsMeshDohTimeout) * time.Second,
+		}
+
+		handler.DoHClient = doh.NewDoHClient(dohConfig)
+
+		if verbose {
+			log.Info().Msgf("DNS-over-HTTPS mode enabled with upstream: %s", httpsUpstream)
+		}
+	}
+
+	return handler
 }
 
 func (h *Handler) UpdateMatcher(m *matcher.Matcher) {
@@ -44,6 +72,30 @@ func (h *Handler) getMatcher() *matcher.Matcher {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.Matcher
+}
+
+// HandleHTTPS sends a DNS query over HTTPS and returns the response
+func (h *Handler) HandleHTTPS(query []byte, protocol string) ([]byte, error) {
+	if h.DoHClient == nil {
+		return nil, errors.New("DoH client not initialized")
+	}
+
+	if h.Verbose {
+		log.Info().Msgf("[%s] Sending query via DNS-over-HTTPS to %s", protocol, h.HTTPSUpstream)
+	}
+
+	// Send query via DoH
+	response, err := h.DoHClient.Query(query)
+	if err != nil {
+		log.Err(err).Msgf("Failed to query via DNS-over-HTTPS")
+		return nil, err
+	}
+
+	if h.Verbose {
+		log.Info().Msgf("[%s] Received %d bytes from DoH server", protocol, len(response))
+	}
+
+	return response, nil
 }
 
 func (h *Handler) HandleUDP(serverConn *net.UDPConn, clientAddr *net.UDPAddr, query []byte) {
@@ -94,58 +146,77 @@ func (h *Handler) HandleUDP(serverConn *net.UDPConn, clientAddr *net.UDPAddr, qu
 		}
 	}
 
-	upstreamAddr, err := net.ResolveUDPAddr("udp", h.UpstreamDNS)
-	if err != nil {
-		log.Err(err).Msg("Failed to resolve upstream DNS:")
-		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamDial, protocol).Inc()
-		metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
-		return
-	}
+	var responseBuffer []byte
+	var n int
 
-	upstreamConn, err := net.DialUDP("udp", nil, upstreamAddr)
-	if err != nil {
-		log.Err(err).Msg("Failed to connect to upstream DNS:")
-		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamDial, protocol).Inc()
-		metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
-		return
-	}
-	defer upstreamConn.Close()
-
-	upstreamConn.SetDeadline(time.Now().Add(5 * time.Second))
-
-	_, err = upstreamConn.Write(query)
-	if err != nil {
-		log.Err(err).Msg("Failed to send query to upstream:")
-		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamWrite, protocol).Inc()
-		metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
-		return
-	}
-
-	if h.Verbose {
-		log.Info().Msgf("Forwarded query to %s", h.UpstreamDNS)
-	}
-
-	responseBuffer := make([]byte, 512)
-	n, err := upstreamConn.Read(responseBuffer)
-	if err != nil {
-		log.Err(err).Msg("Failed to read response from upstream:")
-
-		// Check if it's a timeout
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamTimeout, protocol).Inc()
-		} else {
+	// Check if HTTPS mode is enabled
+	if h.HTTPSModeEnabled {
+		// Use DNS-over-HTTPS
+		response, err := h.HandleHTTPS(query, protocol)
+		if err != nil {
+			log.Err(err).Msg("Failed to query via DNS-over-HTTPS:")
 			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamRead, protocol).Inc()
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
+		}
+		responseBuffer = response
+		n = len(response)
+	} else {
+		// Use regular UDP forwarding
+		upstreamAddr, err := net.ResolveUDPAddr("udp", h.UpstreamDNS)
+		if err != nil {
+			log.Err(err).Msg("Failed to resolve upstream DNS:")
+			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamDial, protocol).Inc()
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
 		}
 
-		metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
-		return
+		upstreamConn, err := net.DialUDP("udp", nil, upstreamAddr)
+		if err != nil {
+			log.Err(err).Msg("Failed to connect to upstream DNS:")
+			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamDial, protocol).Inc()
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
+		}
+		defer upstreamConn.Close()
+
+		upstreamConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+		_, err = upstreamConn.Write(query)
+		if err != nil {
+			log.Err(err).Msg("Failed to send query to upstream:")
+			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamWrite, protocol).Inc()
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
+		}
+
+		if h.Verbose {
+			log.Info().Msgf("Forwarded query to %s", h.UpstreamDNS)
+		}
+
+		buffer := make([]byte, 512)
+		n, err = upstreamConn.Read(buffer)
+		if err != nil {
+			log.Err(err).Msg("Failed to read response from upstream:")
+
+			// Check if it's a timeout
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamTimeout, protocol).Inc()
+			} else {
+				metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamRead, protocol).Inc()
+			}
+
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
+		}
+		responseBuffer = buffer
+
+		if h.Verbose {
+			log.Info().Msgf("Received %d bytes from upstream", n)
+		}
 	}
 
-	if h.Verbose {
-		log.Info().Msgf("Received %d bytes from upstream", n)
-	}
-
-	_, err = serverConn.WriteToUDP(responseBuffer[:n], clientAddr)
+	_, err := serverConn.WriteToUDP(responseBuffer[:n], clientAddr)
 	if err != nil {
 		log.Err(err).Msg("Failed to send response to client:")
 		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeClientWrite, protocol).Inc()
@@ -166,6 +237,7 @@ func (h *Handler) HandleTCP(clientConn net.Conn) {
 	defer clientConn.Close()
 	start := time.Now()
 	protocol := "tcp"
+	var n int
 
 	// Increment total queries
 	metrics.QueriesTotal.WithLabelValues(protocol).Inc()
@@ -191,7 +263,7 @@ func (h *Handler) HandleTCP(clientConn net.Conn) {
 	}
 
 	query := make([]byte, queryLen)
-	n, err := clientConn.Read(query)
+	n, err = clientConn.Read(query)
 	if err != nil {
 		log.Err(err).Msg("Failed to read TCP query:")
 		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeParse, protocol).Inc()
@@ -258,83 +330,103 @@ func (h *Handler) HandleTCP(clientConn net.Conn) {
 		}
 	}
 
-	upstreamConn, err := net.DialTimeout("tcp", h.UpstreamDNS, 5*time.Second)
-	if err != nil {
-		log.Err(err).Msg("Failed to connect to upstream DNS via TCP:")
+	var response []byte
 
-		// Check if it's a timeout
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamTimeout, protocol).Inc()
-		} else {
-			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamDial, protocol).Inc()
-		}
-
-		metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
-		return
-	}
-	defer upstreamConn.Close()
-
-	upstreamConn.SetDeadline(time.Now().Add(5 * time.Second))
-
-	_, err = upstreamConn.Write(lengthBuf)
-	if err != nil {
-		log.Err(err).Msg("Failed to send length prefix to upstream:")
-		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamWrite, protocol).Inc()
-		metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
-		return
-	}
-
-	_, err = upstreamConn.Write(query)
-	if err != nil {
-		log.Err(err).Msg("Failed to send query to upstream:")
-		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamWrite, protocol).Inc()
-		metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
-		return
-	}
-
-	if h.Verbose {
-		log.Info().Msgf("Forwarded TCP query to %s", h.UpstreamDNS)
-	}
-
-	responseLengthBuf := make([]byte, 2)
-	_, err = upstreamConn.Read(responseLengthBuf)
-	if err != nil {
-		log.Err(err).Msg("Failed to read response length from upstream:")
-
-		// Check if it's a timeout
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamTimeout, protocol).Inc()
-		} else {
+	// Check if HTTPS mode is enabled
+	if h.HTTPSModeEnabled {
+		// Use DNS-over-HTTPS
+		dohResponse, err := h.HandleHTTPS(query, protocol)
+		if err != nil {
+			log.Err(err).Msg("Failed to query via DNS-over-HTTPS:")
 			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamRead, protocol).Inc()
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
+		}
+		response = dohResponse
+		n = len(dohResponse)
+	} else {
+		// Use regular TCP forwarding
+		upstreamConn, err := net.DialTimeout("tcp", h.UpstreamDNS, 5*time.Second)
+		if err != nil {
+			log.Err(err).Msg("Failed to connect to upstream DNS via TCP:")
+
+			// Check if it's a timeout
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamTimeout, protocol).Inc()
+			} else {
+				metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamDial, protocol).Inc()
+			}
+
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
+		}
+		defer upstreamConn.Close()
+
+		upstreamConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+		_, err = upstreamConn.Write(lengthBuf)
+		if err != nil {
+			log.Err(err).Msg("Failed to send length prefix to upstream:")
+			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamWrite, protocol).Inc()
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
 		}
 
-		metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
-		return
-	}
-
-	responseLen := int(responseLengthBuf[0])<<8 | int(responseLengthBuf[1])
-
-	response := make([]byte, responseLen)
-	n, err = upstreamConn.Read(response)
-	if err != nil {
-		log.Err(err).Msg("Failed to read response from upstream:")
-
-		// Check if it's a timeout
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamTimeout, protocol).Inc()
-		} else {
-			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamRead, protocol).Inc()
+		_, err = upstreamConn.Write(query)
+		if err != nil {
+			log.Err(err).Msg("Failed to send query to upstream:")
+			metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamWrite, protocol).Inc()
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
 		}
 
-		metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
-		return
+		if h.Verbose {
+			log.Info().Msgf("Forwarded TCP query to %s", h.UpstreamDNS)
+		}
+
+		responseLengthBuf := make([]byte, 2)
+		_, err = upstreamConn.Read(responseLengthBuf)
+		if err != nil {
+			log.Err(err).Msg("Failed to read response length from upstream:")
+
+			// Check if it's a timeout
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamTimeout, protocol).Inc()
+			} else {
+				metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamRead, protocol).Inc()
+			}
+
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
+		}
+
+		responseLen := int(responseLengthBuf[0])<<8 | int(responseLengthBuf[1])
+
+		response = make([]byte, responseLen)
+		n, err = upstreamConn.Read(response)
+		if err != nil {
+			log.Err(err).Msg("Failed to read response from upstream:")
+
+			// Check if it's a timeout
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamTimeout, protocol).Inc()
+			} else {
+				metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeUpstreamRead, protocol).Inc()
+			}
+
+			metrics.QueryDuration.WithLabelValues(protocol, "error").Observe(time.Since(start).Seconds())
+			return
+		}
+
+		if h.Verbose {
+			log.Info().Msgf("Received %d bytes from upstream via TCP", n)
+		}
 	}
 
-	if h.Verbose {
-		log.Info().Msgf("Received %d bytes from upstream via TCP", n)
-	}
-
-	_, err = clientConn.Write(responseLengthBuf)
+	// Send response to client with TCP length prefix
+	responseLen := len(response[:n])
+	lengthPrefix := []byte{byte(responseLen >> 8), byte(responseLen & 0xFF)}
+	_, err = clientConn.Write(lengthPrefix)
 	if err != nil {
 		log.Err(err).Msg("Failed to send response length to client:")
 		metrics.ErrorsTotal.WithLabelValues(metrics.ErrorTypeClientWrite, protocol).Inc()

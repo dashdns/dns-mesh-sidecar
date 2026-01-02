@@ -6,14 +6,16 @@ import (
 )
 
 type Config struct {
-	ListenAddr    string
-	UpstreamDNS   string
-	Verbose       bool
-	Blocklist     []string
-	DryRun        bool
-	ControllerURL string
-	FetchInterval time.Duration
-	MetricsAddr   string
+	ListenAddr       string
+	UpstreamDNS      string
+	Verbose          bool
+	Blocklist        []string
+	DryRun           bool
+	ControllerURL    string
+	FetchInterval    time.Duration
+	MetricsAddr      string
+	HTTPSModeEnabled bool
+	HTTPSUpstream    string
 }
 
 func Load() *Config {
@@ -26,6 +28,8 @@ func Load() *Config {
 	flag.StringVar(&cfg.ControllerURL, "controller", "", "Controller URL to fetch policies from")
 	flag.IntVar(&fetchIntervalSec, "fetch-interval", 30, "Policy fetch interval in seconds (default 30)")
 	flag.StringVar(&cfg.MetricsAddr, "metrics", ":9090", "Metrics HTTP server address (default :9090)")
+	flag.BoolVar(&cfg.HTTPSModeEnabled, "https-mode", false, "Enable DNS-over-HTTPS mode")
+	flag.StringVar(&cfg.HTTPSUpstream, "https-upstream", "https://1.1.1.1/dns-query", "DNS-over-HTTPS upstream server (default Cloudflare)")
 	flag.Parse()
 
 	cfg.FetchInterval = time.Duration(fetchIntervalSec) * time.Second
