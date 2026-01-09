@@ -18,45 +18,127 @@ const (
 )
 
 type Handler struct {
-	UpstreamDNS      string
-	Verbose          bool
-	DryRun           bool
-	Matcher          *matcher.Matcher
-	HTTPSModeEnabled bool
-	HTTPSUpstream    string
-	DoHClient        *doh.DoHClient
-	mu               sync.RWMutex
+	UpstreamDNS           string
+	Verbose               bool
+	DryRun                bool
+	Matcher               *matcher.Matcher
+	HTTPSModeEnabled      bool
+	HTTPSUpstream         string
+	DoHClient             *doh.DoHClient
+	dnsMeshDohTimeout     int
+	tlsCACert             string
+	tlsInsecureSkipVerify bool
+	getTLSCertData        func() ([]byte, []byte, []byte) // function to get current TLS cert/key/CA data
+	mu                    sync.RWMutex
 }
 
-func NewHandler(upstreamDNS string, verbose bool, m *matcher.Matcher, httpsModeEnabled bool, httpsUpstream string, dnsMeshDohTimeout int) *Handler {
+func NewHandler(upstreamDNS string, verbose bool, m *matcher.Matcher, httpsModeEnabled bool, httpsUpstream string, dnsMeshDohTimeout int, tlsCACert string, tlsClientCert string, tlsClientKey string, tlsInsecureSkipVerify bool, getTLSCertData func() ([]byte, []byte, []byte)) *Handler {
 	handler := &Handler{
-		UpstreamDNS:      upstreamDNS,
-		Verbose:          verbose,
-		Matcher:          m,
-		HTTPSModeEnabled: httpsModeEnabled,
-		HTTPSUpstream:    httpsUpstream,
+		UpstreamDNS:           upstreamDNS,
+		Verbose:               verbose,
+		Matcher:               m,
+		HTTPSModeEnabled:      httpsModeEnabled,
+		HTTPSUpstream:         httpsUpstream,
+		dnsMeshDohTimeout:     dnsMeshDohTimeout,
+		tlsCACert:             tlsCACert,
+		tlsInsecureSkipVerify: tlsInsecureSkipVerify,
+		getTLSCertData:        getTLSCertData,
 	}
 
 	// Initialize DoH client if HTTPS mode is enabled
 	if httpsModeEnabled {
-		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
-
-		dohConfig := doh.DoHConfig{
-			ServerURL: httpsUpstream,
-			TLSConfig: tlsConfig,
-			Timeout:   time.Duration(dnsMeshDohTimeout) * time.Second,
-		}
-
-		handler.DoHClient = doh.NewDoHClient(dohConfig)
+		handler.initDoHClient(tlsClientCert, tlsClientKey)
 
 		if verbose {
 			log.Info().Msgf("DNS-over-HTTPS mode enabled with upstream: %s", httpsUpstream)
+			if tlsCACert != "" {
+				log.Info().Msgf("Using custom CA certificate: %s", tlsCACert)
+			}
+			if tlsClientCert != "" && tlsClientKey != "" {
+				log.Info().Msgf("Using client certificate for mTLS: %s", tlsClientCert)
+			}
+			if tlsInsecureSkipVerify {
+				log.Warn().Msg("TLS certificate verification is disabled")
+			}
 		}
 	}
 
 	return handler
+}
+
+// initDoHClient initializes or reinitializes the DoH client with current TLS configuration
+func (h *Handler) initDoHClient(tlsClientCert, tlsClientKey string) {
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	dohConfig := doh.DoHConfig{
+		ServerURL:          h.HTTPSUpstream,
+		TLSConfig:          tlsConfig,
+		Timeout:            time.Duration(h.dnsMeshDohTimeout) * time.Second,
+		CACertPath:         h.tlsCACert,
+		ClientCertPath:     tlsClientCert,
+		ClientKeyPath:      tlsClientKey,
+		InsecureSkipVerify: h.tlsInsecureSkipVerify,
+	}
+
+	// Get in-memory TLS data if available
+	if h.getTLSCertData != nil {
+		certData, keyData, caCertData := h.getTLSCertData()
+		if len(certData) > 0 && len(keyData) > 0 {
+			dohConfig.ClientCertData = certData
+			dohConfig.ClientKeyData = keyData
+		}
+		if len(caCertData) > 0 {
+			dohConfig.CACertData = caCertData
+		}
+	}
+
+	h.DoHClient = doh.NewDoHClient(dohConfig)
+}
+
+// UpdateTLSConfig updates the DoH client with new TLS certificate data
+func (h *Handler) UpdateTLSConfig() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if !h.HTTPSModeEnabled {
+		return
+	}
+
+	if h.Verbose {
+		log.Info().Msg("Updating DoH client with new TLS configuration")
+	}
+
+	h.initDoHClient("", "")
+}
+
+// SetHTTPSMode dynamically enables or disables HTTPS mode
+func (h *Handler) SetHTTPSMode(enabled bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.HTTPSModeEnabled = enabled
+
+	if enabled {
+		// Initialize DoH client when enabling
+		if h.DoHClient == nil {
+			h.initDoHClient("", "")
+		}
+		if h.Verbose {
+			log.Info().Msg("DNS-over-HTTPS mode enabled")
+		}
+	} else {
+		if h.Verbose {
+			log.Info().Msg("DNS-over-HTTPS mode disabled")
+		}
+	}
+}
+
+// isHTTPSModeEnabled returns whether HTTPS mode is currently enabled (thread-safe)
+func (h *Handler) isHTTPSModeEnabled() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.HTTPSModeEnabled
 }
 
 func (h *Handler) UpdateMatcher(m *matcher.Matcher) {
@@ -150,8 +232,9 @@ func (h *Handler) HandleUDP(serverConn *net.UDPConn, clientAddr *net.UDPAddr, qu
 	var n int
 
 	// Check if HTTPS mode is enabled
-	if h.HTTPSModeEnabled {
+	if h.isHTTPSModeEnabled() {
 		// Use DNS-over-HTTPS
+		protocol = "https"
 		response, err := h.HandleHTTPS(query, protocol)
 		if err != nil {
 			log.Err(err).Msg("Failed to query via DNS-over-HTTPS:")
@@ -333,7 +416,7 @@ func (h *Handler) HandleTCP(clientConn net.Conn) {
 	var response []byte
 
 	// Check if HTTPS mode is enabled
-	if h.HTTPSModeEnabled {
+	if h.isHTTPSModeEnabled() {
 		// Use DNS-over-HTTPS
 		dohResponse, err := h.HandleHTTPS(query, protocol)
 		if err != nil {

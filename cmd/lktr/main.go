@@ -22,6 +22,15 @@ func main() {
 	if cfg.HTTPSModeEnabled {
 		log.Info().Msgf("DNS-over-HTTPS mode: ENABLED\n")
 		log.Info().Msgf("HTTPS Upstream: %s\n", cfg.HTTPSUpstream)
+		if cfg.TLSCACert != "" {
+			log.Info().Msgf("TLS CA Certificate: %s\n", cfg.TLSCACert)
+		}
+		if cfg.TLSClientCert != "" && cfg.TLSClientKey != "" {
+			log.Info().Msgf("TLS Client Certificate: %s\n", cfg.TLSClientCert)
+		}
+		if cfg.TLSInsecureSkipVerify {
+			log.Warn().Msg("TLS certificate verification: DISABLED (insecure)\n")
+		}
 	}
 	if cfg.ControllerURL != "" {
 		log.Info().Msgf("Controller URL: %s\n", cfg.ControllerURL)
@@ -45,7 +54,11 @@ func main() {
 		dnsMeshDohTimeout = 10
 	}
 
-	dnsHandler := dns.NewHandler(cfg.UpstreamDNS, cfg.Verbose, m, cfg.HTTPSModeEnabled, cfg.HTTPSUpstream, dnsMeshDohTimeout)
+	// Create a function to get TLS cert data from config
+	getTLSCertData := func() ([]byte, []byte, []byte) {
+		return cfg.GetTLSClientCertData(), cfg.GetTLSClientKeyData(), cfg.GetTLSCACertData()
+	}
+	dnsHandler := dns.NewHandler(cfg.UpstreamDNS, cfg.Verbose, m, cfg.HTTPSModeEnabled, cfg.HTTPSUpstream, dnsMeshDohTimeout, cfg.TLSCACert, cfg.TLSClientCert, cfg.TLSClientKey, cfg.TLSInsecureSkipVerify, getTLSCertData)
 
 	updateChannel := make(chan []string, 10)
 
@@ -66,7 +79,38 @@ func main() {
 
 	operationalMode := os.Getenv("DNS_MESH_OPERATIONAL_MODE")
 	if cfg.ControllerURL != "" {
-		fetcher := client.NewFetcher(cfg.ControllerURL, &cfg.FetchInterval, cfg.Verbose, updateChannel, &cfg.DryRun, operationalMode)
+		// Create DoH callback to update DoH mode when controller changes it
+		dohCallback := func(enabled bool) {
+			// Update config DoH status
+			cfg.SetHTTPSMode(enabled)
+			// Update DNS handler DoH status
+			dnsHandler.SetHTTPSMode(enabled)
+			if cfg.Verbose {
+				if enabled {
+					log.Info().Msg("DoH mode dynamically enabled by controller")
+				} else {
+					log.Info().Msg("DoH mode dynamically disabled by controller")
+				}
+			}
+		}
+
+		// Create TLS data callback to update config when controller provides new TLS data
+		tlsCallback := func(tlsData *client.TLSData) {
+			if err := cfg.UpdateTLSData(tlsData.Certificate, tlsData.PrivateKey, tlsData.CACertificate); err != nil {
+				log.Err(err).Msg("Failed to update TLS data from controller")
+				return
+			}
+
+			// Update DoH client with new TLS configuration if DoH is enabled
+			if cfg.IsHTTPSModeEnabled() {
+				dnsHandler.UpdateTLSConfig()
+				if cfg.Verbose {
+					log.Info().Msg("DoH client updated with new TLS credentials from controller")
+				}
+			}
+		}
+
+		fetcher := client.NewFetcher(cfg.ControllerURL, &cfg.FetchInterval, cfg.Verbose, updateChannel, &cfg.DryRun, operationalMode, tlsCallback, dohCallback)
 		go fetcher.Start()
 	} else {
 		log.Info().Msgf("Warning: No controller URL specified, running without policy updates")

@@ -20,6 +20,7 @@ type DnsPolicySpec struct {
 	AllowList      []string          `json:"allowList,omitempty"`
 	BlockList      []string          `json:"blockList,omitempty"`
 	DryRun         bool              `json:"dryrun,omitempty"`
+	Doh            bool              `json:"doh,omitempty"`
 	Interval       int               `json:"interval,omitempty"`
 }
 
@@ -30,6 +31,17 @@ type DnsPolicyStatus struct {
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 }
 
+type TLSData struct {
+	Certificate   string `json:"certificate"`   // base64-encoded client certificate
+	PrivateKey    string `json:"privateKey"`    // base64-encoded client private key
+	CACertificate string `json:"caCertificate"` // base64-encoded CA certificate
+}
+
+type ControllerResponse struct {
+	Policy  DnsPolicy `json:"policy"`
+	TLSData *TLSData  `json:"tlsData,omitempty"`
+}
+
 type Fetcher struct {
 	controllerURL   string
 	fetchInterval   *time.Duration
@@ -38,4 +50,6 @@ type Fetcher struct {
 	operationalMode string
 	updateChannel   chan []string
 	httpClient      *http.Client
+	tlsDataCallback func(*TLSData) // callback to update TLS data when fetched
+	dohCallback     func(bool)     // callback to update DoH status when fetched
 }
